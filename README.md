@@ -20,6 +20,7 @@ Note: you will likely have popups when first run asking for permission to use th
 
 ## Mappings
 ```
+Right Hand
 Peace sign -------------------->  quit program            (working)
 Index and thumb pinch --------->  single click            (working)
 Index and middle together ----->  mouse down/drag         (working)
@@ -28,8 +29,11 @@ Four finger swipe right/left -->  switch screens          (working)
 Pinky finger extended --------->  open typing mode        (working)
 Four finger swipe down -------->  close typing mode       (working)
 ASL alphabet ------------------>  individual characters   (working somewhat)
+
+Left Hand
 Fist -------------------------->  ⌘ + space               (planned)
 Fist (in typing mode) --------->  space                   (planned)
+Thumbs up --------------------->  Capitalize letter       (planned)
 ```
 
 Package Notes:
