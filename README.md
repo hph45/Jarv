@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/hph45/Jarv/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge" alt="CI status"></a>
-  <a href="https://github.com/hph45/Jarv/releases"><img src="https://img.shields.io/badge/Build-V2026.2.14" alt="GitHub release"></a>
+  <a href="https://github.com/hph45/Jarv/releases"><img src="https://img.shields.io/badge/Release-V2026.2.14-blue" alt="GitHub release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
