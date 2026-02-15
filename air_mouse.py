@@ -106,11 +106,43 @@ def thumb_extended(lm):
     th_mcp = lm[2]
     th_ip = lm[3]
     th_tip = lm[4]
+    idx_mcp = lm[5]
+    idx_tip = lm[8]
     d_tip = dist(th_tip, wrist)
     d_ip = dist(th_ip, wrist)
     d_tip_mcp = dist(th_tip, th_mcp)
     d_ip_mcp = dist(th_ip, th_mcp)
-    return (d_tip > d_ip * cfg.THUMB_EXT_WRIST_RATIO) and (d_tip_mcp > d_ip_mcp * cfg.THUMB_EXT_MCP_RATIO)
+    geom_extended = (d_tip > d_ip * cfg.THUMB_EXT_WRIST_RATIO) and (d_tip_mcp > d_ip_mcp * cfg.THUMB_EXT_MCP_RATIO)
+    # Palm-side test using the index-finger line:
+    # If thumb tip is on the same side of index line as the wrist, thumb is closed.
+    ax, ay = idx_mcp
+    bx, by = idx_tip
+    tx, ty = th_tip
+    wx, wy = wrist
+    thumb_side = (bx - ax) * (ty - ay) - (by - ay) * (tx - ax)
+    wrist_side = (bx - ax) * (wy - ay) - (by - ay) * (wx - ax)
+    thumb_outside_palm = (thumb_side * wrist_side) < 0
+    return geom_extended and thumb_outside_palm
+
+def finger_state(lm, mcp_idx, pip_idx, tip_idx):
+    if finger_extended(lm, mcp_idx, pip_idx, tip_idx):
+        return "extended"
+    wrist = lm[0]
+    d_tip = dist(lm[tip_idx], wrist)
+    d_pip = dist(lm[pip_idx], wrist)
+    if d_tip < d_pip * 0.92:
+        return "curled"
+    return "closed"
+
+def thumb_state(lm):
+    if thumb_extended(lm):
+        return "extended"
+    wrist = lm[0]
+    d_tip = dist(lm[4], wrist)
+    d_ip = dist(lm[3], wrist)
+    if d_tip < d_ip * 0.92:
+        return "curled"
+    return "closed"
 
 def peace_sign(lm):
     idx_ok = finger_extended(lm, 5, 6, 8)
@@ -240,8 +272,32 @@ def main():
                 break
 
         active = False
+        finger_states = {
+            "Thumb": "no hand",
+            "Index": "no hand",
+            "Middle": "no hand",
+            "Ring": "no hand",
+            "Pinky": "no hand",
+        }
+        action_drag = "no hand"
+        action_single = "no hand"
+        action_double = "no hand"
+        action_peace = "no hand"
+        action_swipe = "no hand"
+
         if chosen:
             lm_px, _, lm_norm = chosen
+            action_drag = "up"
+            action_single = "idle"
+            action_double = "idle"
+            action_peace = "idle"
+            action_swipe = "idle"
+
+            finger_states["Thumb"] = thumb_state(lm_px)
+            finger_states["Index"] = finger_state(lm_px, 5, 6, 8)
+            finger_states["Middle"] = finger_state(lm_px, 9, 10, 12)
+            finger_states["Ring"] = finger_state(lm_px, 13, 14, 16)
+            finger_states["Pinky"] = finger_state(lm_px, 17, 18, 20)
 
             # draw a few landmarks for debugging
             for idx in [0, 4, 5, 8, 9]:
@@ -253,17 +309,25 @@ def main():
             cv2.line(frame, lm_px[10], lm_px[11], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
             cv2.line(frame, lm_px[11], lm_px[12], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
             cv2.line(frame, lm_px[12], lm_px[4], cfg.UI_MIDDLE_TRACKER_COLOR, 1)
+            # index-finger tracker + "line going down" toward palm for thumb-side debugging.
+            for idx in [5, 6, 7, 8]:
+                cv2.circle(frame, lm_px[idx], 6, cfg.UI_MIDDLE_TRACKER_COLOR, -1)
+            cv2.line(frame, lm_px[5], lm_px[6], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
+            cv2.line(frame, lm_px[6], lm_px[7], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
+            cv2.line(frame, lm_px[7], lm_px[8], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
+            idx_tip_px = lm_px[8]
+            idx_mcp_px = lm_px[5]
+            dx = idx_mcp_px[0] - idx_tip_px[0]
+            dy = idx_mcp_px[1] - idx_tip_px[1]
+            down_end = (int(idx_tip_px[0] + 2.0 * dx), int(idx_tip_px[1] + 2.0 * dy))
+            cv2.line(frame, idx_tip_px, down_end, cfg.UI_MIDDLE_TRACKER_COLOR, 1)
 
             # fingertip normalized coords
             ix, iy = lm_norm[8]
-
-            # clamp to control box
             ix = (clamp(ix, box["xmin"], box["xmax"]) - box["xmin"]) / (box["xmax"] - box["xmin"])
             iy = (clamp(iy, box["ymin"], box["ymax"]) - box["ymin"]) / (box["ymax"] - box["ymin"])
 
             # map to screen
-            # camera y increases downward; Quartz expects top-left-ish global coords,
-            # so keep the same y direction to avoid inverted control.
             sx = int(ix * screen_w)
             sy = int(iy * screen_h)
 
@@ -275,38 +339,12 @@ def main():
 
             # Evaluate all three pinch pairings.
             p_idx_mid = pinch_strength_between(lm_px, 8, 12)  # drag hold
-            p_idx_th = pinch_strength_between(lm_px, 8, 4)    # double click
-            p_mid_th = pinch_strength_between(lm_px, 12, 4)   # single click
+            p_idx_th = pinch_strength_between(lm_px, 8, 4)    # single click
+            p_mid_th = pinch_strength_between(lm_px, 12, 4)   # double click
             want_down = (p_idx_mid <= drag_down_thresh) if (not drag_down) else (p_idx_mid < drag_up_thresh)
-            cv2.putText(
-                frame,
-                f"IM={p_idx_mid:.2f} IT={p_idx_th:.2f} MT={p_mid_th:.2f}",
-                (10, 60),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                cfg.UI_TEXT_COLOR,
-                2,
-            )
-            mouse_state = "DOWN" if drag_down else "UP"
-            target_state = "DOWN" if want_down else "UP"
-            cv2.putText(
-                frame,
-                f"MOUSE={mouse_state} want={target_state} IM_dn<={drag_down_thresh:.2f} IM_up>={drag_up_thresh:.2f}",
-                (10, 90),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                cfg.UI_TEXT_COLOR,
-                2,
-            )
-            cv2.putText(
-                frame,
-                f"MT_active={mid_thumb_active} MT_dn<={click_down_thresh:.2f} MT_up>={click_up_thresh:.2f} action=double",
-                (10, 120),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
-                cfg.UI_TEXT_COLOR,
-                2,
-            )
+            action_drag = "down" if drag_down else ("ready" if want_down else "up")
+            action_single = "ready" if p_idx_th <= click_down_thresh else "idle"
+            action_double = "ready" if p_mid_th <= click_down_thresh else "idle"
 
             if index_extended(lm_px) or drag_down:
                 active = True
@@ -316,10 +354,12 @@ def main():
             # index+middle pinch: hold drag
             if (not drag_down) and (p_idx_mid <= drag_down_thresh) and (now - last_drag_toggle_time > click_debounce_s):
                 drag_down = True
+                action_drag = "down"
                 last_drag_toggle_time = now
                 mouse_down(int(smoothed[0]), int(smoothed[1]))
             elif drag_down and (p_idx_mid >= drag_up_thresh):
                 drag_down = False
+                action_drag = "up"
                 last_drag_toggle_time = now
                 mouse_up(int(smoothed[0]), int(smoothed[1]))
 
@@ -328,6 +368,7 @@ def main():
                 idx_thumb_active = True
                 if now - last_idx_thumb_click_time > click_debounce_s:
                     mouse_click(int(smoothed[0]), int(smoothed[1]))
+                    action_single = "triggered"
                     last_idx_thumb_click_time = now
             elif idx_thumb_active and (p_idx_th >= click_up_thresh):
                 idx_thumb_active = False
@@ -337,6 +378,7 @@ def main():
                 mid_thumb_active = True
                 if now - last_mid_thumb_click_time > click_debounce_s:
                     mouse_double_click(int(smoothed[0]), int(smoothed[1]))
+                    action_double = "triggered"
                     last_mid_thumb_click_time = now
             elif mid_thumb_active and (p_mid_th >= click_up_thresh):
                 mid_thumb_active = False
@@ -345,14 +387,14 @@ def main():
                 if peace_seen_at is None:
                     peace_seen_at = time.time()
                 hold = time.time() - peace_seen_at
-                cv2.putText(frame, f"PEACE to quit: {max(0.0, peace_hold_s - hold):.1f}s", (10, 150),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, cfg.UI_TEXT_COLOR, 2)
+                action_peace = f"hold {max(0.0, peace_hold_s - hold):.1f}s"
                 if hold >= peace_hold_s:
                     break
             else:
                 peace_seen_at = None
 
-            four_up = four_fingers_up(lm_px)
+            thumb_out = thumb_extended(lm_px)
+            four_up = four_fingers_up(lm_px) and (not thumb_out)
             cooldown_ready = (time.time() - last_space_switch_time) >= space_switch_cooldown_s
             swipe_dx = 0.0
             swipe_left_ready = False
@@ -364,36 +406,29 @@ def main():
                 swipe_dx = palm_x - four_start_x
                 swipe_left_ready = swipe_dx >= swipe_norm_thresh
                 swipe_right_ready = swipe_dx <= -swipe_norm_thresh
-                cv2.putText(
-                    frame,
-                    f"4F swipe dx={swipe_dx:+.2f}",
-                    (10, 180),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.65,
-                    cfg.UI_TEXT_COLOR,
-                    2,
-                )
                 now = time.time()
-                if now - last_space_switch_time >= space_switch_cooldown_s:
-                    if swipe_dx >= swipe_norm_thresh:
-                        switch_desktop("left")
-                        last_space_switch_time = now
-                        four_start_x = palm_x
-                    elif swipe_dx <= -swipe_norm_thresh:
-                        switch_desktop("right")
-                        last_space_switch_time = now
-                        four_start_x = palm_x
+                if cooldown_ready and swipe_left_ready:
+                    switch_desktop("left")
+                    action_swipe = "switched left"
+                    last_space_switch_time = now
+                    four_start_x = palm_x
+                elif cooldown_ready and swipe_right_ready:
+                    switch_desktop("right")
+                    action_swipe = "switched right"
+                    last_space_switch_time = now
+                    four_start_x = palm_x
+                elif not cooldown_ready:
+                    action_swipe = "cooldown"
+                elif swipe_left_ready:
+                    action_swipe = "left ready"
+                elif swipe_right_ready:
+                    action_swipe = "right ready"
+                else:
+                    action_swipe = f"tracking dx={swipe_dx:+.2f}"
+            elif thumb_out:
+                action_swipe = "blocked (thumb out)"
             else:
                 four_start_x = None
-            cv2.putText(
-                frame,
-                f"4F_up={four_up} cooldown_ready={cooldown_ready} left_ready={swipe_left_ready} right_ready={swipe_right_ready}",
-                (10, 210),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.58,
-                cfg.UI_TEXT_COLOR,
-                2,
-            )
         else:
             if drag_down:
                 drag_down = False
@@ -403,6 +438,53 @@ def main():
             mid_thumb_active = False
             peace_seen_at = None
             four_start_x = None
+
+        # Left panel: action status
+        left_x = 10
+        left_y = 60
+        left_step = 24
+        cv2.putText(frame, "Actions", (left_x, left_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, cfg.UI_TEXT_COLOR, 2)
+        action_lines = [
+            f"Drag (Index+Middle): {action_drag}",
+            f"Single Click (Index+Thumb): {action_single}",
+            f"Double Click (Middle+Thumb): {action_double}",
+            f"Peace Exit: {action_peace}",
+            f"4F Desktop Swipe: {action_swipe}",
+            f"Mouse Button: {'down' if drag_down else 'up'}",
+        ]
+        for i, line in enumerate(action_lines, start=1):
+            cv2.putText(
+                frame,
+                line,
+                (left_x, left_y + i * left_step),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                cfg.UI_TEXT_COLOR,
+                2,
+            )
+
+        # Right panel: finger status
+        right_x = max(10, w - 300)
+        right_y = 60
+        right_step = 24
+        cv2.putText(frame, "Fingers", (right_x, right_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, cfg.UI_TEXT_COLOR, 2)
+        finger_lines = [
+            f"Thumb: {finger_states['Thumb']}",
+            f"Index: {finger_states['Index']}",
+            f"Middle: {finger_states['Middle']}",
+            f"Ring: {finger_states['Ring']}",
+            f"Pinky: {finger_states['Pinky']}",
+        ]
+        for i, line in enumerate(finger_lines, start=1):
+            cv2.putText(
+                frame,
+                line,
+                (right_x, right_y + i * right_step),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                cfg.UI_TEXT_COLOR,
+                2,
+            )
 
         # UI text
         dt = time.time() - last_move_time
