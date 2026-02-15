@@ -251,6 +251,8 @@ def main():
     typing_last_key_time = 0.0
     typing_exit_swipe_start_y = None
     typing_letter_history = []
+    typing_letter_armed = True
+    typing_space_armed = True
 
     last_move_time = time.time()
     fps = 0.0
@@ -276,24 +278,30 @@ def main():
             1
         )
 
-        chosen = None  # (lm_pixels, handedness_label, landmarks_norm)
+        right_hand = None  # (lm_pixels, landmarks_norm)
+        left_hand = None   # (lm_pixels, landmarks_norm)
 
         if res.multi_hand_landmarks and res.multi_handedness:
-            # pick RIGHT hand
             for hand_lms, handedness in zip(res.multi_hand_landmarks, res.multi_handedness):
                 label = handedness.classification[0].label  # "Right" or "Left" (from camera POV after flip)
-                # After frame flipped horizontally, MediaPipe handedness still refers to the hand itself
-                if label != "Right":
-                    continue
-
-                # get normalized landmarks
                 lm_norm = [(p.x, p.y) for p in hand_lms.landmark]
                 lm_px = [(int(p.x * w), int(p.y * h)) for p in hand_lms.landmark]
-                chosen = (lm_px, label, lm_norm)
-                break
+                if label == "Right":
+                    right_hand = (lm_px, lm_norm)
+                elif label == "Left":
+                    left_hand = (lm_px, lm_norm)
+
+        chosen = right_hand
 
         active = False
         finger_states = {
+            "Thumb": "no hand",
+            "Index": "no hand",
+            "Middle": "no hand",
+            "Ring": "no hand",
+            "Pinky": "no hand",
+        }
+        left_finger_states = {
             "Thumb": "no hand",
             "Index": "no hand",
             "Middle": "no hand",
@@ -306,12 +314,23 @@ def main():
         action_peace = "no hand"
         action_swipe = "no hand"
         action_typing = "idle"
+        action_space = "idle"
+        action_upper = "off"
         typing_meter_line = "Typing Meter: n/a"
         typing_confidence = 0.0
         typing_stability = 0.0
 
+        if left_hand:
+            left_lm_px, _ = left_hand
+            left_finger_states["Thumb"] = thumb_state(left_lm_px)
+            left_finger_states["Index"] = finger_state(left_lm_px, 5, 6, 8)
+            left_finger_states["Middle"] = finger_state(left_lm_px, 9, 10, 12)
+            left_finger_states["Ring"] = finger_state(left_lm_px, 13, 14, 16)
+            left_finger_states["Pinky"] = finger_state(left_lm_px, 17, 18, 20)
+            action_upper = "on" if tm.left_thumb_modifier_active(left_finger_states) else "off"
+
         if chosen:
-            lm_px, _, lm_norm = chosen
+            lm_px, lm_norm = chosen
             finger_states["Thumb"] = thumb_state(lm_px)
             finger_states["Index"] = finger_state(lm_px, 5, 6, 8)
             finger_states["Middle"] = finger_state(lm_px, 9, 10, 12)
@@ -365,6 +384,8 @@ def main():
                 typing_letter_hold_start = None
                 typing_exit_swipe_start_y = None
                 typing_letter_history = []
+                typing_letter_armed = True
+                typing_space_armed = True
                 if drag_down and smoothed is not None:
                     drag_down = False
                     mouse_up(int(smoothed[0]), int(smoothed[1]))
@@ -373,13 +394,24 @@ def main():
                 action_drag = "disabled (typing)"
                 action_single = "disabled (typing)"
                 action_double = "disabled (typing)"
-                action_peace = "disabled (typing)"
+                action_peace = "idle"
                 action_swipe = "show 5 fingers + swipe down"
 
                 # Keep mouse gestures unreachable in typing mode
                 if drag_down and smoothed is not None:
                     drag_down = False
                     mouse_up(int(smoothed[0]), int(smoothed[1]))
+
+                # Peace quit is available in typing mode too.
+                if peace_sign(lm_px):
+                    if peace_seen_at is None:
+                        peace_seen_at = time.time()
+                    hold = time.time() - peace_seen_at
+                    action_peace = f"hold {max(0.0, peace_hold_s - hold):.1f}s"
+                    if hold >= peace_hold_s:
+                        break
+                else:
+                    peace_seen_at = None
 
                 letter = tm.classify_asl_letter(lm_px, finger_states)
                 typing_letter_history.append(letter)
@@ -406,15 +438,33 @@ def main():
                     typing_meter_line = f"Typing Meter: {letter} conf={typing_confidence*100:.0f}% stab={typing_stability*100:.0f}%"
                     action_typing = f"candidate {letter} hold {max(0.0, cfg.TYPING_LETTER_HOLD_S - hold):.2f}s"
                     if (
+                        typing_letter_armed
+                        and
                         typing_letter_hold_start is not None
                         and hold >= cfg.TYPING_LETTER_HOLD_S
                         and (now - typing_last_key_time) >= cfg.TYPING_REPEAT_COOLDOWN_S
                     ):
-                        if tm.press_letter(letter):
+                        use_upper = tm.left_thumb_modifier_active(left_finger_states)
+                        if tm.press_letter(letter, uppercase=use_upper):
                             typing_last_key_time = now
+                            typing_letter_armed = False
                             action_typing = f"typed {letter}"
 
+                # Space from left-hand fist.
+                if tm.is_fist(left_finger_states):
+                    if typing_space_armed and (now - typing_last_key_time) >= cfg.TYPING_REPEAT_COOLDOWN_S:
+                        tm.press_space()
+                        typing_last_key_time = now
+                        typing_space_armed = False
+                        action_space = "typed"
+                    else:
+                        action_space = "holding"
+                else:
+                    typing_space_armed = True
+                    action_space = "idle"
+
                 if tm.all_five_extended(finger_states):
+                    typing_letter_armed = True
                     palm_y = tm.palm_center_y_norm(lm_norm)
                     if typing_exit_swipe_start_y is None:
                         typing_exit_swipe_start_y = palm_y
@@ -430,6 +480,8 @@ def main():
                         typing_letter_candidate = None
                         typing_letter_hold_start = None
                         typing_letter_history = []
+                        typing_letter_armed = True
+                        typing_space_armed = True
                         action_swipe = "switched browsing"
                 else:
                     typing_exit_swipe_start_y = None
@@ -440,6 +492,7 @@ def main():
                 action_peace = "idle"
                 action_swipe = "idle"
                 action_typing = "off"
+                action_space = "off"
 
                 # Evaluate all three pinch pairings
                 p_idx_mid = pinch_strength_between(lm_px, 8, 12)  # drag hold
@@ -581,6 +634,8 @@ def main():
             f"Double Click (Middle+Thumb): {action_double}",
             f"Typing Letter: {action_typing}",
             typing_meter_line,
+            f"Space (Left Fist): {action_space}",
+            f"Uppercase (Left Thumb): {action_upper}",
             f"Peace Exit: {action_peace}",
             f"4F Desktop Swipe: {action_swipe}",
             f"Mouse Button: {'down' if drag_down else 'up'}",

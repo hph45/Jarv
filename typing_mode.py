@@ -10,6 +10,8 @@ LETTER_KEYCODE = {
     "K": 40, "L": 37, "M": 46, "N": 45, "O": 31, "P": 35, "Q": 12, "R": 15, "S": 1, "T": 17,
     "U": 32, "V": 9, "W": 13, "X": 7, "Y": 16, "Z": 6,
 }
+KEYCODE_SPACE = 49
+KEYCODE_SHIFT = 56
 
 
 def _dist(a, b):
@@ -43,16 +45,47 @@ def palm_center_y_norm(lm_norm):
     return sum(lm_norm[i][1] for i in idxs) / len(idxs)
 
 
-def press_letter(letter):
-    keycode = LETTER_KEYCODE.get(letter.upper())
-    if keycode is None:
-        return False
+def is_fist(finger_states):
+    return (
+        finger_states["Thumb"] != "extended"
+        and finger_states["Index"] != "extended"
+        and finger_states["Middle"] != "extended"
+        and finger_states["Ring"] != "extended"
+        and finger_states["Pinky"] != "extended"
+    )
+
+
+def left_thumb_modifier_active(finger_states):
+    return finger_states["Thumb"] == "extended"
+
+
+def _tap_key(keycode, with_shift=False):
+    if with_shift:
+        shift_down = CGEventCreateKeyboardEvent(None, KEYCODE_SHIFT, True)
+        CGEventSetFlags(shift_down, 0)
+        CGEventPost(kCGHIDEventTap, shift_down)
     down = CGEventCreateKeyboardEvent(None, keycode, True)
     up = CGEventCreateKeyboardEvent(None, keycode, False)
     CGEventSetFlags(down, 0)
     CGEventSetFlags(up, 0)
     CGEventPost(kCGHIDEventTap, down)
     CGEventPost(kCGHIDEventTap, up)
+    if with_shift:
+        shift_up = CGEventCreateKeyboardEvent(None, KEYCODE_SHIFT, False)
+        CGEventSetFlags(shift_up, 0)
+        CGEventPost(kCGHIDEventTap, shift_up)
+
+
+def press_letter(letter, uppercase=False):
+    keycode = LETTER_KEYCODE.get(letter.upper())
+    if keycode is None:
+        return False
+    _tap_key(keycode, with_shift=uppercase)
+    return True
+
+
+def press_space():
+    _tap_key(KEYCODE_SPACE, with_shift=False)
     return True
 
 
@@ -88,14 +121,24 @@ def classify_asl_letter(lm, finger_states):
             return "G"
         return "L"
     if i and m and not r and not p and t:
-        if _near(lm, 4, 10, 0.35):
+        # K vs P vs H
+        if _near(lm, 4, 10, 0.30):
             return "K"
         if lm[8][1] > lm[6][1] and lm[12][1] > lm[10][1]:
             return "P"
+        if _dist(lm[8], lm[12]) / hs > 0.18:
+            return "H"
         return "H"
     if i and not m and not r and not p and not t:
-        if _near(lm, 4, 12, 0.32):
+        # D: index up + thumb to middle area, not near index tip.
+        if _near(lm, 4, 12, 0.32) and not _near(lm, 4, 8, 0.24):
             return "D"
+        # Q: index pointed downward-like.
+        if lm[8][1] > lm[6][1]:
+            return "Q"
+        # G: index horizontal-ish with thumb near index side.
+        if abs(lm[8][1] - lm[6][1]) / hs < 0.20:
+            return "G"
         if lm[8][1] > lm[6][1]:
             return "Z"
         return "X"
@@ -106,18 +149,21 @@ def classify_asl_letter(lm, finger_states):
     if not i and not m and not r and not p:
         if t:
             return "A"
-        if _near(lm, 4, 8, 0.27) and _near(lm, 4, 12, 0.33):
-            return "E"
+        # O: compact rounded closure.
+        if _near(lm, 4, 8, 0.24) and _near(lm, 4, 12, 0.30):
+            return "O"
+        # T: thumb tucked near index MCP.
+        if _near(lm, 4, 5, 0.26):
+            return "T"
+        # M / N: thumb under 3 or 2 fingers respectively.
         if _near(lm, 4, 14, 0.34):
             return "M"
-        if _near(lm, 4, 10, 0.32):
+        if _near(lm, 4, 10, 0.30):
             return "N"
+        if _near(lm, 4, 8, 0.27) and _near(lm, 4, 12, 0.33):
+            return "E"
         if 0.28 <= (_dist(lm[4], lm[8]) / hs) <= 0.55:
             return "C"
-        if _near(lm, 4, 8, 0.35):
-            return "O"
-        if _near(lm, 4, 8, 0.24):
-            return "T"
         return "S"
 
     # J is dynamic in ASL; fallback heuristic near I-like shape
