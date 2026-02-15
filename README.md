@@ -33,4 +33,4 @@ Fist (in typing mode) --------->  space                   (planned)
 ```
 
 Package Notes:
-- Older version of mediapipe is used to account for #AttributeError: module 'mediapipe' has no attribute 'solutions' error.
+- Older version of mediapipe is used to account for ```#AttributeError: module 'mediapipe' has no attribute 'solutions'``` error.
