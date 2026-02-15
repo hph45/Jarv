@@ -9,30 +9,69 @@ import mediapipe as mp
 
 from Quartz.CoreGraphics import (
     CGEventCreateMouseEvent,
+    CGEventCreateKeyboardEvent,
     CGEventPost,
+    CGEventSetFlags,
     CGWarpMouseCursorPosition,
     kCGHIDEventTap,
+    kCGSessionEventTap,
     kCGEventMouseMoved,
+    kCGEventLeftMouseDragged,
     kCGEventLeftMouseDown,
     kCGEventLeftMouseUp,
+    kCGEventFlagMaskControl,
     kCGMouseButtonLeft,
 )
+try:
+    from Carbon.HIToolbox import kVK_LeftArrow, kVK_RightArrow
+except Exception:
+    # Fallback virtual keycodes for macOS arrows.
+    kVK_LeftArrow = 123
+    kVK_RightArrow = 124
+kVK_Control = 59
 
 # macOS mouse helpers
-def mouse_move(x, y):
+def mouse_move(x, y, dragging=False):
     # to avoids some event throttling
     CGWarpMouseCursorPosition((x, y))
     # some apps respond better with an event ig
-    evt = CGEventCreateMouseEvent(None, kCGEventMouseMoved, (x, y), kCGMouseButtonLeft)
+    event_type = kCGEventLeftMouseDragged if dragging else kCGEventMouseMoved
+    evt = CGEventCreateMouseEvent(None, event_type, (x, y), kCGMouseButtonLeft)
+    # Ensure no keyboard modifiers leak into mouse actions.
+    CGEventSetFlags(evt, 0)
     CGEventPost(kCGHIDEventTap, evt)
 
 def mouse_down(x, y):
     evt = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, (x, y), kCGMouseButtonLeft)
+    CGEventSetFlags(evt, 0)
     CGEventPost(kCGHIDEventTap, evt)
 
 def mouse_up(x, y):
     evt = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, (x, y), kCGMouseButtonLeft)
+    CGEventSetFlags(evt, 0)
     CGEventPost(kCGHIDEventTap, evt)
+
+def mouse_click(x, y):
+    mouse_down(x, y)
+    mouse_up(x, y)
+
+def mouse_double_click(x, y):
+    mouse_click(x, y)
+    time.sleep(0.03)
+    mouse_click(x, y)
+
+def switch_desktop(direction):
+    keycode = kVK_RightArrow if direction == "right" else kVK_LeftArrow
+    ctrl_down = CGEventCreateKeyboardEvent(None, kVK_Control, True)
+    arrow_down = CGEventCreateKeyboardEvent(None, keycode, True)
+    arrow_up = CGEventCreateKeyboardEvent(None, keycode, False)
+    ctrl_up = CGEventCreateKeyboardEvent(None, kVK_Control, False)
+    CGEventSetFlags(arrow_down, kCGEventFlagMaskControl)
+    CGEventSetFlags(arrow_up, kCGEventFlagMaskControl)
+    CGEventPost(kCGSessionEventTap, ctrl_down)
+    CGEventPost(kCGSessionEventTap, arrow_down)
+    CGEventPost(kCGSessionEventTap, arrow_up)
+    CGEventPost(kCGSessionEventTap, ctrl_up)
 
 # gesture math stuff
 def dist(a, b):
@@ -70,26 +109,50 @@ def finger_extended(lm, mcp_idx, pip_idx, tip_idx):
     d_pip_mcp = dist(pip, mcp)
     return (d_tip > d_pip * 1.06) and (d_tip_mcp > d_pip_mcp * 1.10)
 
+def thumb_extended(lm):
+    # Thumb uses landmarks: CMC(1), MCP(2), IP(3), TIP(4)
+    wrist = lm[0]
+    th_mcp = lm[2]
+    th_ip = lm[3]
+    th_tip = lm[4]
+    d_tip = dist(th_tip, wrist)
+    d_ip = dist(th_ip, wrist)
+    d_tip_mcp = dist(th_tip, th_mcp)
+    d_ip_mcp = dist(th_ip, th_mcp)
+    return (d_tip > d_ip * 1.06) and (d_tip_mcp > d_ip_mcp * 1.10)
+
 def peace_sign(lm):
     idx_ok = finger_extended(lm, 5, 6, 8)
     mid_ok = finger_extended(lm, 9, 10, 12)
     ring_curled = not finger_extended(lm, 13, 14, 16)
     pinky_curled = not finger_extended(lm, 17, 18, 20)
+    thumb_curled = not thumb_extended(lm)
     split = dist(lm[8], lm[12]) > 0.28 * (dist(lm[0], lm[9]) + 1e-6)
-    return idx_ok and mid_ok and split and ring_curled and pinky_curled
+    return idx_ok and mid_ok and split and ring_curled and pinky_curled and thumb_curled
+
+def four_fingers_up(lm):
+    idx_ok = finger_extended(lm, 5, 6, 8)
+    mid_ok = finger_extended(lm, 9, 10, 12)
+    ring_ok = finger_extended(lm, 13, 14, 16)
+    pinky_ok = finger_extended(lm, 17, 18, 20)
+    return idx_ok and mid_ok and ring_ok and pinky_ok
+
+def palm_center_x_norm(lm_norm):
+    # Average stable palm landmarks for smoother horizontal swipe tracking.
+    idxs = [0, 5, 9, 13, 17]
+    return sum(lm_norm[i][0] for i in idxs) / len(idxs)
 
 # Pinch heuristic:
-# use normalized distance (thumb tip to index tip) divided by hand size.
-def pinch_strength(lm):
-    thumb_tip = lm[4]
-    idx_tip = lm[8]
-
+# use normalized distance between two fingertips divided by hand size.
+def pinch_strength_between(lm, a_idx, b_idx):
+    a = lm[a_idx]
+    b = lm[b_idx]
     # hand size ~ distance wrist to middle MCP (landmark 9) or index MCP (5)
     wrist = lm[0]
     mid_mcp = lm[9]
     hand_size = dist(wrist, mid_mcp) + 1e-6
 
-    pinch = dist(thumb_tip, idx_tip) / hand_size
+    pinch = dist(a, b) / hand_size
     return pinch  # smaller = more pinched
 
 # enough pinch math
@@ -123,21 +186,32 @@ def main():
     # map only within a sort of control box for stability
     # (normalized camera coords)
     box = {
-        "xmin": 0.20,
-        "xmax": 0.85,
-        "ymin": 0.15,
-        "ymax": 0.85
+        "xmin": 0.23,
+        "xmax": 0.82,
+        "ymin": 0.18,
+        "ymax": 0.82
     }
 
-    # Pinch click state
-    pinched = False
-    pinch_down_thresh = 0.20  # pinch_strength <= this -> press
-    pinch_up_thresh   = 0.30  # pinch_strength >= this -> release (hysteresis)
-    pinch_down_time = 0.0
-    click_debounce_s = 0.08
+    # Gesture pinch states
+    drag_down = False  # index+middle pinch holds left mouse button for drag
+    idx_thumb_active = False
+    mid_thumb_active = False
+
+    drag_down_thresh = 0.22
+    drag_up_thresh = 0.32
+    click_down_thresh = 0.20
+    click_up_thresh = 0.30
+    click_debounce_s = 0.12
+    last_drag_toggle_time = 0.0
+    last_idx_thumb_click_time = 0.0
+    last_mid_thumb_click_time = 0.0
 
     peace_seen_at = None
     peace_hold_s = 0.8
+    four_start_x = None
+    last_space_switch_time = 0.0
+    space_switch_cooldown_s = 1.0
+    swipe_norm_thresh = 0.06
 
     last_move_time = time.time()
     fps = 0.0
@@ -206,39 +280,111 @@ def main():
             else:
                 smoothed = alpha * np.array([sx, sy], dtype=np.float32) + (1 - alpha) * smoothed
 
-            # pinch is always evaluated so pinch can act as true mouse press/hold.
-            p = pinch_strength(lm_px)  # uses pixel lm for hand_size; good enough
-            cv2.putText(frame, f"pinch={p:.2f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+            # Evaluate all three pinch pairings.
+            p_idx_mid = pinch_strength_between(lm_px, 8, 12)  # drag hold
+            p_idx_th = pinch_strength_between(lm_px, 8, 4)    # double click
+            p_mid_th = pinch_strength_between(lm_px, 12, 4)   # single click
+            want_down = (p_idx_mid <= drag_down_thresh) if (not drag_down) else (p_idx_mid < drag_up_thresh)
+            cv2.putText(
+                frame,
+                f"IM={p_idx_mid:.2f} IT={p_idx_th:.2f} MT={p_mid_th:.2f}",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+            )
+            mouse_state = "DOWN" if drag_down else "UP"
+            target_state = "DOWN" if want_down else "UP"
+            cv2.putText(
+                frame,
+                f"MOUSE={mouse_state} want={target_state} IM_dn<={drag_down_thresh:.2f} IM_up>={drag_up_thresh:.2f}",
+                (10, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+            )
 
-            if index_extended(lm_px) or pinched:
+            if index_extended(lm_px) or drag_down:
                 active = True
-                mouse_move(int(smoothed[0]), int(smoothed[1]))
+                mouse_move(int(smoothed[0]), int(smoothed[1]), dragging=drag_down)
 
             now = time.time()
-            if (not pinched) and (p <= pinch_down_thresh) and (now - pinch_down_time > click_debounce_s):
-                pinched = True
-                pinch_down_time = now
+            # index+middle pinch: hold drag
+            if (not drag_down) and (p_idx_mid <= drag_down_thresh) and (now - last_drag_toggle_time > click_debounce_s):
+                drag_down = True
+                last_drag_toggle_time = now
                 mouse_down(int(smoothed[0]), int(smoothed[1]))
-            elif pinched and (p >= pinch_up_thresh):
-                pinched = False
+            elif drag_down and (p_idx_mid >= drag_up_thresh):
+                drag_down = False
+                last_drag_toggle_time = now
                 mouse_up(int(smoothed[0]), int(smoothed[1]))
+
+            # index+thumb pinch: double click (on pinch-in edge)
+            if (not idx_thumb_active) and (p_idx_th <= click_down_thresh):
+                idx_thumb_active = True
+                if now - last_idx_thumb_click_time > click_debounce_s:
+                    mouse_double_click(int(smoothed[0]), int(smoothed[1]))
+                    last_idx_thumb_click_time = now
+            elif idx_thumb_active and (p_idx_th >= click_up_thresh):
+                idx_thumb_active = False
+
+            # middle+thumb pinch: single click (on pinch-in edge)
+            if (not mid_thumb_active) and (p_mid_th <= click_down_thresh):
+                mid_thumb_active = True
+                if now - last_mid_thumb_click_time > click_debounce_s:
+                    mouse_click(int(smoothed[0]), int(smoothed[1]))
+                    last_mid_thumb_click_time = now
+            elif mid_thumb_active and (p_mid_th >= click_up_thresh):
+                mid_thumb_active = False
 
             if peace_sign(lm_px):
                 if peace_seen_at is None:
                     peace_seen_at = time.time()
                 hold = time.time() - peace_seen_at
-                cv2.putText(frame, f"PEACE to quit: {max(0.0, peace_hold_s - hold):.1f}s", (10, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 180, 255), 2)
+                cv2.putText(frame, f"PEACE to quit: {max(0.0, peace_hold_s - hold):.1f}s", (10, 120),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 if hold >= peace_hold_s:
                     break
             else:
                 peace_seen_at = None
+
+            if four_fingers_up(lm_px):
+                palm_x = palm_center_x_norm(lm_norm)
+                if four_start_x is None:
+                    four_start_x = palm_x
+                swipe_dx = palm_x - four_start_x
+                cv2.putText(
+                    frame,
+                    f"4F swipe dx={swipe_dx:+.2f}",
+                    (10, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (255, 255, 255),
+                    2,
+                )
+                now = time.time()
+                if now - last_space_switch_time >= space_switch_cooldown_s:
+                    if swipe_dx >= swipe_norm_thresh:
+                        switch_desktop("left")
+                        last_space_switch_time = now
+                        four_start_x = palm_x
+                    elif swipe_dx <= -swipe_norm_thresh:
+                        switch_desktop("right")
+                        last_space_switch_time = now
+                        four_start_x = palm_x
+            else:
+                four_start_x = None
         else:
-            if pinched:
-                pinched = False
+            if drag_down:
+                drag_down = False
                 if smoothed is not None:
                     mouse_up(int(smoothed[0]), int(smoothed[1]))
+            idx_thumb_active = False
+            mid_thumb_active = False
             peace_seen_at = None
+            four_start_x = None
 
         # UI text
         dt = time.time() - last_move_time
