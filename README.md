@@ -29,11 +29,15 @@ Four finger swipe right/left -->  switch screens          (working)
 Pinky finger extended --------->  open typing mode        (working)
 Four finger swipe down -------->  close typing mode       (working)
 ASL alphabet ------------------>  individual characters   (working somewhat)
+Numbers ----------------------->  TBD                     (planned)
 
 Left Hand
 Fist -------------------------->  ⌘ + space               (planned)
-Fist (in typing mode) --------->  space                   (planned)
-Thumbs up --------------------->  Capitalize letter       (planned)
+Fist (in typing mode) --------->  space                   (working somewhat)
+Thumbs up --------------------->  Capitalize letter       (working somewhat)
+
+Shortcuts
+TBD --------------------------->  TBD                     (planned)
 ```
 
 Package Notes:
