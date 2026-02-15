@@ -6,7 +6,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-**Jarv** is a python program for MacOS computer vision mapping hand gestures to mouse + keyboard control.
+**Jarv** is a python program for MacOS that uses computer vision to hand gestures to mouse + keyboard control. Open files, browse your favorite sites, even write lengthy emails, all without ever touching your computer.
 
 ## How to run after cloning
 ```
@@ -25,7 +25,9 @@ Index and thumb pinch --------->  single click            (working)
 Index and middle together ----->  mouse down/drag         (working)
 Middle and thumb pinch -------->  double click            (not working rn)
 Four finger swipe right/left -->  switch screens          (not working rn)
-Pinky finger extended --------->  open typing menu        (planned)
+Pinky finger extended --------->  open typing mode        (planned)
+Four finger swipe down -------->  close typing mode       (planned)
 ASL alphabet ------------------>  individual characters   (planned)
 Fist -------------------------->  ⌘ + space               (planned)
+Fist (in typing mode) --------->  space                   (planned)
 ```
