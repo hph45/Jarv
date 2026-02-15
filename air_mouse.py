@@ -3,23 +3,22 @@
 
 import time
 import math
+import subprocess
 import numpy as np
 import cv2
 import mediapipe as mp
+import air_mouse_settings as cfg
 
 from Quartz.CoreGraphics import (
     CGEventCreateMouseEvent,
-    CGEventCreateKeyboardEvent,
     CGEventPost,
     CGEventSetFlags,
     CGWarpMouseCursorPosition,
     kCGHIDEventTap,
-    kCGSessionEventTap,
     kCGEventMouseMoved,
     kCGEventLeftMouseDragged,
     kCGEventLeftMouseDown,
     kCGEventLeftMouseUp,
-    kCGEventFlagMaskControl,
     kCGMouseButtonLeft,
 )
 try:
@@ -28,8 +27,6 @@ except Exception:
     # Fallback virtual keycodes for macOS arrows.
     kVK_LeftArrow = 123
     kVK_RightArrow = 124
-kVK_Control = 59
-
 # macOS mouse helpers
 def mouse_move(x, y, dragging=False):
     # to avoids some event throttling
@@ -57,21 +54,15 @@ def mouse_click(x, y):
 
 def mouse_double_click(x, y):
     mouse_click(x, y)
-    time.sleep(0.03)
+    time.sleep(cfg.DOUBLE_CLICK_GAP_S)
     mouse_click(x, y)
 
 def switch_desktop(direction):
     keycode = kVK_RightArrow if direction == "right" else kVK_LeftArrow
-    ctrl_down = CGEventCreateKeyboardEvent(None, kVK_Control, True)
-    arrow_down = CGEventCreateKeyboardEvent(None, keycode, True)
-    arrow_up = CGEventCreateKeyboardEvent(None, keycode, False)
-    ctrl_up = CGEventCreateKeyboardEvent(None, kVK_Control, False)
-    CGEventSetFlags(arrow_down, kCGEventFlagMaskControl)
-    CGEventSetFlags(arrow_up, kCGEventFlagMaskControl)
-    CGEventPost(kCGSessionEventTap, ctrl_down)
-    CGEventPost(kCGSessionEventTap, arrow_down)
-    CGEventPost(kCGSessionEventTap, arrow_up)
-    CGEventPost(kCGSessionEventTap, ctrl_up)
+    # Use System Events; this is typically more reliable for Mission Control
+    # desktop switching than posting raw CG keyboard events.
+    script = f'tell application "System Events" to key code {keycode} using control down'
+    subprocess.run(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 # gesture math stuff
 def dist(a, b):
@@ -96,7 +87,7 @@ def index_extended(lm):
     d_tip_mcp = dist(idx_tip, idx_mcp)
     d_pip_mcp = dist(idx_pip, idx_mcp)
 
-    return (d_tip > d_pip * 1.08) and (d_tip_mcp > d_pip_mcp * 1.15)
+    return (d_tip > d_pip * cfg.INDEX_EXT_WRIST_RATIO) and (d_tip_mcp > d_pip_mcp * cfg.INDEX_EXT_MCP_RATIO)
 
 def finger_extended(lm, mcp_idx, pip_idx, tip_idx):
     wrist = lm[0]
@@ -107,7 +98,7 @@ def finger_extended(lm, mcp_idx, pip_idx, tip_idx):
     d_pip = dist(pip, wrist)
     d_tip_mcp = dist(tip, mcp)
     d_pip_mcp = dist(pip, mcp)
-    return (d_tip > d_pip * 1.06) and (d_tip_mcp > d_pip_mcp * 1.10)
+    return (d_tip > d_pip * cfg.FINGER_EXT_WRIST_RATIO) and (d_tip_mcp > d_pip_mcp * cfg.FINGER_EXT_MCP_RATIO)
 
 def thumb_extended(lm):
     # Thumb uses landmarks: CMC(1), MCP(2), IP(3), TIP(4)
@@ -119,7 +110,7 @@ def thumb_extended(lm):
     d_ip = dist(th_ip, wrist)
     d_tip_mcp = dist(th_tip, th_mcp)
     d_ip_mcp = dist(th_ip, th_mcp)
-    return (d_tip > d_ip * 1.06) and (d_tip_mcp > d_ip_mcp * 1.10)
+    return (d_tip > d_ip * cfg.THUMB_EXT_WRIST_RATIO) and (d_tip_mcp > d_ip_mcp * cfg.THUMB_EXT_MCP_RATIO)
 
 def peace_sign(lm):
     idx_ok = finger_extended(lm, 5, 6, 8)
@@ -127,7 +118,7 @@ def peace_sign(lm):
     ring_curled = not finger_extended(lm, 13, 14, 16)
     pinky_curled = not finger_extended(lm, 17, 18, 20)
     thumb_curled = not thumb_extended(lm)
-    split = dist(lm[8], lm[12]) > 0.28 * (dist(lm[0], lm[9]) + 1e-6)
+    split = dist(lm[8], lm[12]) > cfg.PEACE_SPLIT_RATIO * (dist(lm[0], lm[9]) + 1e-6)
     return idx_ok and mid_ok and split and ring_curled and pinky_curled and thumb_curled
 
 def four_fingers_up(lm):
@@ -172,46 +163,41 @@ def main():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=False,
-        max_num_hands=2,
-        model_complexity=1,
-        min_detection_confidence=0.6,
-        min_tracking_confidence=0.6,
+        max_num_hands=cfg.MP_MAX_NUM_HANDS,
+        model_complexity=cfg.MP_MODEL_COMPLEXITY,
+        min_detection_confidence=cfg.MP_MIN_DETECTION_CONFIDENCE,
+        min_tracking_confidence=cfg.MP_MIN_TRACKING_CONFIDENCE,
     )
 
     # cursor smoothing (might need to change, higher = snappier, 
     # lower = smoother but maybe laggy)
     smoothed = None
-    alpha = 0.35
+    alpha = cfg.CURSOR_SMOOTHING_ALPHA
 
     # map only within a sort of control box for stability
     # (normalized camera coords)
-    box = {
-        "xmin": 0.23,
-        "xmax": 0.82,
-        "ymin": 0.18,
-        "ymax": 0.82
-    }
+    box = cfg.CONTROL_BOX
 
     # Gesture pinch states
     drag_down = False  # index+middle pinch holds left mouse button for drag
     idx_thumb_active = False
     mid_thumb_active = False
 
-    drag_down_thresh = 0.22
-    drag_up_thresh = 0.32
-    click_down_thresh = 0.20
-    click_up_thresh = 0.30
-    click_debounce_s = 0.12
+    drag_down_thresh = cfg.DRAG_DOWN_THRESH
+    drag_up_thresh = cfg.DRAG_UP_THRESH
+    click_down_thresh = cfg.CLICK_DOWN_THRESH
+    click_up_thresh = cfg.CLICK_UP_THRESH
+    click_debounce_s = cfg.CLICK_DEBOUNCE_S
     last_drag_toggle_time = 0.0
     last_idx_thumb_click_time = 0.0
     last_mid_thumb_click_time = 0.0
 
     peace_seen_at = None
-    peace_hold_s = 0.8
+    peace_hold_s = cfg.PEACE_HOLD_S
     four_start_x = None
     last_space_switch_time = 0.0
-    space_switch_cooldown_s = 1.0
-    swipe_norm_thresh = 0.06
+    space_switch_cooldown_s = cfg.SPACE_SWITCH_COOLDOWN_S
+    swipe_norm_thresh = cfg.SWIPE_NORM_THRESH
 
     last_move_time = time.time()
     fps = 0.0
@@ -233,7 +219,7 @@ def main():
             frame,
             (int(box["xmin"] * w), int(box["ymin"] * h)),
             (int(box["xmax"] * w), int(box["ymax"] * h)),
-            (80, 80, 80),
+            cfg.UI_BOX_COLOR,
             1
         )
 
@@ -260,6 +246,13 @@ def main():
             # draw a few landmarks for debugging
             for idx in [0, 4, 5, 8, 9]:
                 cv2.circle(frame, lm_px[idx], 5, (0, 255, 0), -1)
+            # middle-finger visual tracker (MCP -> PIP -> DIP -> TIP).
+            for idx in [9, 10, 11, 12]:
+                cv2.circle(frame, lm_px[idx], 6, cfg.UI_MIDDLE_TRACKER_COLOR, -1)
+            cv2.line(frame, lm_px[9], lm_px[10], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
+            cv2.line(frame, lm_px[10], lm_px[11], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
+            cv2.line(frame, lm_px[11], lm_px[12], cfg.UI_MIDDLE_TRACKER_COLOR, 2)
+            cv2.line(frame, lm_px[12], lm_px[4], cfg.UI_MIDDLE_TRACKER_COLOR, 1)
 
             # fingertip normalized coords
             ix, iy = lm_norm[8]
@@ -291,7 +284,7 @@ def main():
                 (10, 60),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
-                (255, 255, 255),
+                cfg.UI_TEXT_COLOR,
                 2,
             )
             mouse_state = "DOWN" if drag_down else "UP"
@@ -302,7 +295,16 @@ def main():
                 (10, 90),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
-                (255, 255, 255),
+                cfg.UI_TEXT_COLOR,
+                2,
+            )
+            cv2.putText(
+                frame,
+                f"MT_active={mid_thumb_active} MT_dn<={click_down_thresh:.2f} MT_up>={click_up_thresh:.2f} action=double",
+                (10, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                cfg.UI_TEXT_COLOR,
                 2,
             )
 
@@ -321,20 +323,20 @@ def main():
                 last_drag_toggle_time = now
                 mouse_up(int(smoothed[0]), int(smoothed[1]))
 
-            # index+thumb pinch: double click (on pinch-in edge)
+            # index+thumb pinch: single click (on pinch-in edge)
             if (not idx_thumb_active) and (p_idx_th <= click_down_thresh):
                 idx_thumb_active = True
                 if now - last_idx_thumb_click_time > click_debounce_s:
-                    mouse_double_click(int(smoothed[0]), int(smoothed[1]))
+                    mouse_click(int(smoothed[0]), int(smoothed[1]))
                     last_idx_thumb_click_time = now
             elif idx_thumb_active and (p_idx_th >= click_up_thresh):
                 idx_thumb_active = False
 
-            # middle+thumb pinch: single click (on pinch-in edge)
+            # middle+thumb pinch: double click (on pinch-in edge)
             if (not mid_thumb_active) and (p_mid_th <= click_down_thresh):
                 mid_thumb_active = True
                 if now - last_mid_thumb_click_time > click_debounce_s:
-                    mouse_click(int(smoothed[0]), int(smoothed[1]))
+                    mouse_double_click(int(smoothed[0]), int(smoothed[1]))
                     last_mid_thumb_click_time = now
             elif mid_thumb_active and (p_mid_th >= click_up_thresh):
                 mid_thumb_active = False
@@ -343,25 +345,32 @@ def main():
                 if peace_seen_at is None:
                     peace_seen_at = time.time()
                 hold = time.time() - peace_seen_at
-                cv2.putText(frame, f"PEACE to quit: {max(0.0, peace_hold_s - hold):.1f}s", (10, 120),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(frame, f"PEACE to quit: {max(0.0, peace_hold_s - hold):.1f}s", (10, 150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, cfg.UI_TEXT_COLOR, 2)
                 if hold >= peace_hold_s:
                     break
             else:
                 peace_seen_at = None
 
-            if four_fingers_up(lm_px):
+            four_up = four_fingers_up(lm_px)
+            cooldown_ready = (time.time() - last_space_switch_time) >= space_switch_cooldown_s
+            swipe_dx = 0.0
+            swipe_left_ready = False
+            swipe_right_ready = False
+            if four_up:
                 palm_x = palm_center_x_norm(lm_norm)
                 if four_start_x is None:
                     four_start_x = palm_x
                 swipe_dx = palm_x - four_start_x
+                swipe_left_ready = swipe_dx >= swipe_norm_thresh
+                swipe_right_ready = swipe_dx <= -swipe_norm_thresh
                 cv2.putText(
                     frame,
                     f"4F swipe dx={swipe_dx:+.2f}",
-                    (10, 150),
+                    (10, 180),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.65,
-                    (255, 255, 255),
+                    cfg.UI_TEXT_COLOR,
                     2,
                 )
                 now = time.time()
@@ -376,6 +385,15 @@ def main():
                         four_start_x = palm_x
             else:
                 four_start_x = None
+            cv2.putText(
+                frame,
+                f"4F_up={four_up} cooldown_ready={cooldown_ready} left_ready={swipe_left_ready} right_ready={swipe_right_ready}",
+                (10, 210),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                cfg.UI_TEXT_COLOR,
+                2,
+            )
         else:
             if drag_down:
                 drag_down = False
@@ -393,7 +411,7 @@ def main():
         last_move_time = time.time()
 
         status = "ACTIVE" if active else "idle"
-        cv2.putText(frame, f"{status}  FPS={fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(frame, f"{status}  FPS={fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, cfg.UI_TEXT_COLOR, 2)
 
         cv2.imshow("Air Mouse (q to quit)", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
