@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/hph45/Jarv/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge" alt="CI status"></a>
-  <a href="https://github.com/hph45/Jarv/releases"><img src="https://img.shields.io/badge/Release-V2026.2.14-orange?style=for-the-badge" alt="GitHub release"></a>
+  <a href="https://github.com/hph45/Jarv/releases"><img src="https://img.shields.io/badge/Release-V2026.2.15-orange?style=for-the-badge" alt="GitHub release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
@@ -23,11 +23,11 @@ Note: you will likely have popups when first run asking for permission to use th
 Peace sign -------------------->  quit program            (working)
 Index and thumb pinch --------->  single click            (working)
 Index and middle together ----->  mouse down/drag         (working)
-Middle and thumb pinch -------->  double click            (not working rn)
+Middle and thumb pinch -------->  double click            (working)
 Four finger swipe right/left -->  switch screens          (working)
-Pinky finger extended --------->  open typing mode        (planned)
-Four finger swipe down -------->  close typing mode       (planned)
-ASL alphabet ------------------>  individual characters   (planned)
+Pinky finger extended --------->  open typing mode        (working)
+Four finger swipe down -------->  close typing mode       (working)
+ASL alphabet ------------------>  individual characters   (working somewhat)
 Fist -------------------------->  ⌘ + space               (planned)
 Fist (in typing mode) --------->  space                   (planned)
 ```
